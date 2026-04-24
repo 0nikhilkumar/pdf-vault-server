@@ -1,6 +1,7 @@
 import { Subscription } from "../models/subscription.model.js";
 import { User } from "../models/user.model.js";
 import { AdminPdf } from "../models/adminPdf.model.js";
+import { refreshUserPremiumFlag } from "../services/paymentSubscription.service.js";
 
 const isAdmin = (req, res) => {
   if (req.user?.role !== "admin") {
@@ -9,6 +10,34 @@ const isAdmin = (req, res) => {
   }
 
   return true;
+};
+
+const ALLOWED_MANUAL_ACTIONS = new Set([
+  "buy",
+  "extend",
+  "activate",
+  "cancel",
+  "deactivate",
+]);
+const ALLOWED_PAYMENT_TYPES = new Set([
+  "razorpay",
+  "cash",
+  "upi",
+  "bank_transfer",
+  "card",
+  "other",
+]);
+const ALLOWED_SUBSCRIPTION_TYPES = new Set(["basic", "premium"]);
+const PLAN_DURATION_MS = 30 * 24 * 60 * 60 * 1000;
+
+const getBaseDate = (baseDate) => {
+  const now = new Date();
+  return baseDate instanceof Date && baseDate > now ? baseDate : now;
+};
+
+const getNextMonthlyExpiry = (baseDate) => {
+  const start = getBaseDate(baseDate);
+  return new Date(start.getTime() + PLAN_DURATION_MS);
 };
 
 export const getttingAllUsers = async (req, res) => {
@@ -138,6 +167,15 @@ export const getUserWithSubscriptions = async (req, res) => {
       purchaseDate: currentSubscription?.purchaseDate || null,
       status: currentSubscription?.status || null,
       subscriptionType: currentSubscription?.subscriptionType || null,
+      pausedAt: currentSubscription?.pausedAt || null,
+      remainingDurationMs:
+        Number.isFinite(currentSubscription?.remainingDurationMs) &&
+        currentSubscription?.remainingDurationMs > 0
+          ? currentSubscription.remainingDurationMs
+          : null,
+      paymentType: currentSubscription?.paymentType || null,
+      adminRemark: currentSubscription?.adminRemark || null,
+      adminActions: currentSubscription?.adminActions || [],
     };
 
     return res.status(200).json({
@@ -263,6 +301,311 @@ export const updateAdminPdfMetadata = async (req, res) => {
         storedName: updatedPdf.storedName,
         createdAt: updatedPdf.createdAt,
         updatedAt: updatedPdf.updatedAt,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const manageUserSubscriptionByAdmin = async (req, res) => {
+  try {
+    if (!isAdmin(req, res)) {
+      return;
+    }
+
+    const {
+      userId,
+      action,
+      subscriptionType,
+      paymentType,
+      remark,
+      subscriptionId,
+    } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ message: "User ID is required" });
+    }
+
+    if (!action || !ALLOWED_MANUAL_ACTIONS.has(action)) {
+      return res.status(400).json({
+        message:
+          "Invalid action. Allowed actions: buy, extend, activate, cancel, deactivate",
+      });
+    }
+
+    if (!remark || !remark.trim()) {
+      return res.status(400).json({ message: "Remark is required" });
+    }
+
+    const normalizedPaymentType = (paymentType || "other").toLowerCase();
+    if (!ALLOWED_PAYMENT_TYPES.has(normalizedPaymentType)) {
+      return res.status(400).json({
+        message:
+          "Invalid paymentType. Allowed values: razorpay, cash, upi, bank_transfer, card, other",
+      });
+    }
+
+    const normalizedSubscriptionType =
+      typeof subscriptionType === "string"
+        ? subscriptionType.trim().toLowerCase()
+        : null;
+
+    if (
+      normalizedSubscriptionType &&
+      !ALLOWED_SUBSCRIPTION_TYPES.has(normalizedSubscriptionType)
+    ) {
+      return res.status(400).json({
+        message: "Invalid subscriptionType. Allowed values: basic, premium",
+      });
+    }
+
+    const user = await User.findById(userId).select("_id role");
+    if (!user || user.role !== "user") {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const now = new Date();
+    let subscription = null;
+
+    const buildActionLog = () => ({
+      action,
+      remark: remark.trim(),
+      paymentType: normalizedPaymentType,
+      performedBy: req.user._id,
+      performedAt: now,
+    });
+
+    const resolveSubscriptionFilter = (statuses) =>
+      subscriptionId
+        ? { _id: subscriptionId, userId }
+        : {
+            userId,
+            status: { $in: statuses },
+            ...(normalizedSubscriptionType
+              ? { subscriptionType: normalizedSubscriptionType }
+              : {}),
+          };
+
+    if (action === "deactivate") {
+      subscription = await Subscription.findOne(
+        resolveSubscriptionFilter([
+          "active",
+          "trialing",
+          "scheduled",
+          "past_due",
+          "unpaid",
+        ]),
+      ).sort({
+        updatedAt: -1,
+      });
+
+      if (!subscription) {
+        return res.status(404).json({ message: "Subscription not found" });
+      }
+
+      const remainingDurationMs =
+        subscription.expiryDate instanceof Date && subscription.expiryDate > now
+          ? subscription.expiryDate.getTime() - now.getTime()
+          : 0;
+
+      subscription.status = "deactivated";
+      subscription.pausedAt = now;
+      subscription.remainingDurationMs = remainingDurationMs;
+      subscription.expiryDate = null;
+      subscription.paymentType = normalizedPaymentType;
+      subscription.adminRemark = remark.trim();
+      subscription.adminActions = [
+        ...(subscription.adminActions || []),
+        buildActionLog(),
+      ];
+      await subscription.save();
+    }
+
+    if (action === "cancel") {
+      subscription = await Subscription.findOne(
+        resolveSubscriptionFilter([
+          "active",
+          "trialing",
+          "scheduled",
+          "past_due",
+          "unpaid",
+          "deactivated",
+        ]),
+      ).sort({ updatedAt: -1 });
+
+      if (!subscription) {
+        return res.status(404).json({ message: "Subscription not found" });
+      }
+
+      subscription.status = "canceled";
+      subscription.expiryDate = now;
+      subscription.pausedAt = null;
+      subscription.remainingDurationMs = null;
+      subscription.paymentType = normalizedPaymentType;
+      subscription.adminRemark = remark.trim();
+      subscription.adminActions = [
+        ...(subscription.adminActions || []),
+        buildActionLog(),
+      ];
+      await subscription.save();
+    }
+
+    if (action === "activate") {
+      subscription = await Subscription.findOne(
+        resolveSubscriptionFilter(["deactivated", "scheduled"]),
+      ).sort({ updatedAt: -1 });
+
+      if (subscription) {
+        const remainingDurationMs =
+          Number.isFinite(subscription.remainingDurationMs) &&
+          subscription.remainingDurationMs > 0
+            ? subscription.remainingDurationMs
+            : PLAN_DURATION_MS;
+
+        subscription.status = "active";
+        subscription.startDate = subscription.startDate || now;
+        subscription.purchaseDate = now;
+        subscription.expiryDate = new Date(now.getTime() + remainingDurationMs);
+        subscription.pausedAt = null;
+        subscription.remainingDurationMs = null;
+        subscription.paymentType = normalizedPaymentType;
+        subscription.adminRemark = remark.trim();
+        subscription.adminActions = [
+          ...(subscription.adminActions || []),
+          buildActionLog(),
+        ];
+        await subscription.save();
+      } else {
+        const selectedType = normalizedSubscriptionType || "basic";
+        subscription = await Subscription.create({
+          userId,
+          razorpaySubscriptionId: `manual_razorpay_${selectedType}_${userId}_${Date.now()}`,
+          status: "active",
+          subscriptionType: selectedType,
+          startDate: now,
+          purchaseDate: now,
+          expiryDate: new Date(now.getTime() + PLAN_DURATION_MS),
+          pausedAt: null,
+          remainingDurationMs: null,
+          paymentType: normalizedPaymentType,
+          adminRemark: remark.trim(),
+          adminActions: [buildActionLog()],
+        });
+      }
+    }
+
+    if (action === "buy" || action === "extend") {
+      subscription = await Subscription.findOne(
+        resolveSubscriptionFilter([
+          "active",
+          "trialing",
+          "scheduled",
+          "deactivated",
+        ]),
+      ).sort({
+        updatedAt: -1,
+      });
+
+      if (!subscription && action === "extend") {
+        return res.status(404).json({
+          message: "No subscription found to extend. Use action 'buy' first.",
+        });
+      }
+
+      if (!subscription && action === "buy") {
+        const selectedType = normalizedSubscriptionType || "basic";
+        subscription = await Subscription.create({
+          userId,
+          razorpaySubscriptionId: `manual_razorpay_${selectedType}_${userId}_${Date.now()}`,
+          status: "active",
+          subscriptionType: selectedType,
+          startDate: now,
+          purchaseDate: now,
+          expiryDate: new Date(now.getTime() + PLAN_DURATION_MS),
+          pausedAt: null,
+          remainingDurationMs: null,
+          paymentType: normalizedPaymentType,
+          adminRemark: remark.trim(),
+          adminActions: [buildActionLog()],
+        });
+      } else if (subscription.status === "deactivated") {
+        const currentRemainingMs =
+          Number.isFinite(subscription.remainingDurationMs) &&
+          subscription.remainingDurationMs > 0
+            ? subscription.remainingDurationMs
+            : 0;
+
+        if (action === "buy") {
+          const totalRemaining = currentRemainingMs + PLAN_DURATION_MS;
+          subscription.status = "active";
+          subscription.startDate = subscription.startDate || now;
+          subscription.purchaseDate = now;
+          subscription.expiryDate = new Date(now.getTime() + totalRemaining);
+          subscription.pausedAt = null;
+          subscription.remainingDurationMs = null;
+        } else {
+          subscription.remainingDurationMs =
+            currentRemainingMs + PLAN_DURATION_MS;
+        }
+
+        subscription.paymentType = normalizedPaymentType;
+        subscription.adminRemark = remark.trim();
+        subscription.adminActions = [
+          ...(subscription.adminActions || []),
+          buildActionLog(),
+        ];
+        await subscription.save();
+      } else {
+        subscription.status =
+          subscription.status === "scheduled" ? "scheduled" : "active";
+        subscription.startDate = subscription.startDate || now;
+        subscription.purchaseDate = now;
+        subscription.expiryDate = getNextMonthlyExpiry(subscription.expiryDate);
+        subscription.pausedAt = null;
+        subscription.remainingDurationMs = null;
+        subscription.paymentType = normalizedPaymentType;
+        subscription.adminRemark = remark.trim();
+        subscription.adminActions = [
+          ...(subscription.adminActions || []),
+          buildActionLog(),
+        ];
+        await subscription.save();
+      }
+    }
+
+    await refreshUserPremiumFlag(userId);
+
+    const actionResultMessage = {
+      buy: "Subscription purchased successfully by admin",
+      extend: "Subscription extended successfully by admin",
+      activate: "Subscription activated successfully by admin",
+      cancel: "Subscription canceled successfully by admin",
+      deactivate: "Subscription deactivated successfully by admin",
+    };
+
+    return res.status(200).json({
+      message: actionResultMessage[action],
+      subscription: {
+        _id: subscription._id,
+        userId: subscription.userId,
+        status: subscription.status,
+        subscriptionType: subscription.subscriptionType,
+        startDate: subscription.startDate,
+        purchaseDate: subscription.purchaseDate,
+        expiryDate: subscription.expiryDate,
+        pausedAt: subscription.pausedAt || null,
+        remainingDurationMs:
+          Number.isFinite(subscription.remainingDurationMs) &&
+          subscription.remainingDurationMs > 0
+            ? subscription.remainingDurationMs
+            : null,
+        paymentType: subscription.paymentType,
+        adminRemark: subscription.adminRemark,
+        appliedDurationDays: 30,
+        lastAdminAction:
+          subscription.adminActions?.[subscription.adminActions.length - 1] ||
+          null,
       },
     });
   } catch (error) {

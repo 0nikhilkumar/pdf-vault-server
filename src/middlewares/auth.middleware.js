@@ -15,7 +15,12 @@ const cookieOptions = {
 
 export const authMiddleware = async (req, res, next) => {
   try {
-    const { accessToken, refreshToken } = req.cookies || {};
+    const { accessToken: cookieAccessToken, refreshToken } = req.cookies || {};
+    const authorizationHeader = req.headers.authorization || "";
+    const bearerToken = authorizationHeader.startsWith("Bearer ")
+      ? authorizationHeader.slice(7).trim()
+      : "";
+    const accessToken = cookieAccessToken || bearerToken;
     req.user = null;
 
     // Check if both tokens are missing

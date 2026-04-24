@@ -19,7 +19,7 @@ const adminPdfSchema = new Schema(
     },
     locked: {
       type: Boolean,
-      default: false,
+      default: true,
     },
     originalName: {
       type: String,

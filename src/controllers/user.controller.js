@@ -2,7 +2,6 @@ import { User } from "../models/user.model.js";
 import { BlockedToken } from "../models/token.model.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import Stripe from "stripe";
 import { Subscription } from "../models/subscription.model.js";
 import { AdminPdf } from "../models/adminPdf.model.js";
 import fs from "fs";
@@ -13,10 +12,70 @@ import {
 } from "../utils/generateTokens.js";
 import {
   DEFAULT_BILLING_CYCLE_MS,
-  toDateFromUnixSeconds,
   formatDateForResponse,
-  getStripePeriodValue,
 } from "../services/subscriptionHelpers.service.js";
+
+const PLAN_PRIORITY = { basic: 1, premium: 2 };
+const getPlanPriority = (type) => PLAN_PRIORITY[type] || 0;
+
+const isValidDate = (value) =>
+  value instanceof Date && !Number.isNaN(value.getTime());
+
+const getComputedExpiryDate = (subscription) => {
+  if (isValidDate(subscription?.expiryDate)) {
+    return subscription.expiryDate;
+  }
+
+  const baseDate =
+    subscription?.startDate ||
+    subscription?.purchaseDate ||
+    subscription?.createdAt ||
+    null;
+
+  if (!isValidDate(baseDate)) {
+    return null;
+  }
+
+  return new Date(baseDate.getTime() + DEFAULT_BILLING_CYCLE_MS);
+};
+
+const getPrimaryActiveSubscription = (subscriptions) => {
+  if (!Array.isArray(subscriptions) || !subscriptions.length) {
+    return null;
+  }
+
+  return subscriptions.reduce((best, current) => {
+    if (!best) {
+      return current;
+    }
+
+    const bestPriority = getPlanPriority(best.subscriptionType);
+    const currentPriority = getPlanPriority(current.subscriptionType);
+
+    if (currentPriority > bestPriority) {
+      return current;
+    }
+
+    if (currentPriority < bestPriority) {
+      return best;
+    }
+
+    const bestExpiry = isValidDate(best.expiryDate) ? best.expiryDate : null;
+    const currentExpiry = isValidDate(current.expiryDate)
+      ? current.expiryDate
+      : null;
+
+    if (bestExpiry && currentExpiry) {
+      return currentExpiry > bestExpiry ? current : best;
+    }
+
+    if (!bestExpiry && currentExpiry) {
+      return current;
+    }
+
+    return best;
+  }, null);
+};
 
 const cookieOptions = {
   httpOnly: true,
@@ -49,14 +108,6 @@ const blockToken = async (token, tokenType, userId) => {
     },
     { upsert: true, new: true },
   );
-};
-
-const getStripeClient = () => {
-  if (!process.env.STRIPE_SECRET_KEY) {
-    return null;
-  }
-
-  return new Stripe(process.env.STRIPE_SECRET_KEY);
 };
 
 export const register = async (req, res) => {
@@ -485,7 +536,7 @@ export const checkUserSubscription = async (req, res) => {
     });
 
     const subscription =
-      activeSubscriptions[0] ||
+      getPrimaryActiveSubscription(activeSubscriptions) ||
       (await Subscription.findOne({ userId }).sort({
         createdAt: -1,
       }));
@@ -498,192 +549,65 @@ export const checkUserSubscription = async (req, res) => {
       });
     }
 
-    let stripeDetails = null;
-    let currentPeriodEnd = null;
-    let currentPeriodStart = null;
     const now = new Date();
-    let activeRemainingMs = 0;
-    const expiryBySubscriptionId = new Map();
-
-    if (subscription.stripeSubscriptionId) {
-      const stripe = getStripeClient();
-
-      if (!stripe) {
-        return res.status(200).json({
-          isPremium: user.isPremium,
-          hasSubscription: true,
-          subscription: {
-            id: subscription._id,
-            stripeSubscriptionId: subscription.stripeSubscriptionId,
-            subscriptionType: subscription.subscriptionType,
-            status: subscription.status,
-            startDate: subscription.createdAt,
-            updatedAt: subscription.updatedAt,
-            expiryDate: null,
-            expiresAt: null,
-            renewalDate: null,
-            stripe: null,
-          },
-          warning:
-            "STRIPE_SECRET_KEY is not configured. Stripe subscription details are unavailable.",
-        });
-      }
-
-      try {
-        const stripeSubscription = await stripe.subscriptions.retrieve(
-          subscription.stripeSubscriptionId,
-        );
-
-        const currentPeriodEndValue = getStripePeriodValue(
-          stripeSubscription,
-          "current_period_end",
-        );
-        const currentPeriodStartValue = getStripePeriodValue(
-          stripeSubscription,
-          "current_period_start",
-        );
-
-        currentPeriodEnd = toDateFromUnixSeconds(currentPeriodEndValue);
-        currentPeriodStart = toDateFromUnixSeconds(currentPeriodStartValue);
-
-        expiryBySubscriptionId.set(
-          String(subscription._id),
-          subscription.expiryDate instanceof Date
-            ? subscription.expiryDate
-            : currentPeriodEnd,
-        );
-
-        stripeDetails = {
-          id: stripeSubscription.id,
-          customerId: stripeSubscription.customer,
-          status: stripeSubscription.status,
-          cancelAtPeriodEnd: stripeSubscription.cancel_at_period_end,
-          currentPeriodStart,
-          currentPeriodEnd,
-        };
-      } catch (stripeError) {
-        console.error(
-          "Error fetching Stripe subscription details:",
-          stripeError.message,
-        );
-      }
-    }
-
-    for (const activeSubscription of activeSubscriptions) {
-      const existingExpiry = expiryBySubscriptionId.get(
-        String(activeSubscription._id),
-      );
-      if (
-        existingExpiry instanceof Date &&
-        !Number.isNaN(existingExpiry.getTime())
-      ) {
-        activeRemainingMs += Math.max(
-          0,
-          existingExpiry.getTime() - now.getTime(),
-        );
-        continue;
-      }
-
-      const dbExpiry =
-        activeSubscription.expiryDate instanceof Date
-          ? activeSubscription.expiryDate
-          : null;
-
-      if (dbExpiry) {
-        activeRemainingMs += Math.max(0, dbExpiry.getTime() - now.getTime());
-      }
-    }
-
-    const activeExpiryCandidates = activeSubscriptions
-      .map((activeSubscription) => {
-        const existingExpiry = expiryBySubscriptionId.get(
-          String(activeSubscription._id),
-        );
-
-        if (
-          existingExpiry instanceof Date &&
-          !Number.isNaN(existingExpiry.getTime())
-        ) {
-          return existingExpiry;
-        }
-
-        if (
-          activeSubscription.expiryDate instanceof Date &&
-          !Number.isNaN(activeSubscription.expiryDate.getTime())
-        ) {
-          return activeSubscription.expiryDate;
-        }
-
-        return null;
-      })
-      .filter((value) => value instanceof Date);
-
-    const currentPlanExpiresAt = activeExpiryCandidates.length
-      ? activeExpiryCandidates.reduce((latest, value) =>
-          value > latest ? value : latest,
-        )
-      : null;
+    const currentPlanExpiresAt = getComputedExpiryDate(subscription);
 
     const effectiveCurrentPlanEnd =
       currentPlanExpiresAt && currentPlanExpiresAt > now
         ? currentPlanExpiresAt
         : now;
 
-    const sortedScheduledSubscriptions = [...scheduledSubscriptions].sort(
-      (a, b) => {
-        const aTime = new Date(
-          a.startDate || a.purchaseDate || a.createdAt || 0,
-        ).getTime();
-        const bTime = new Date(
-          b.startDate || b.purchaseDate || b.createdAt || 0,
-        ).getTime();
+    const upcomingPlans =
+      subscription.subscriptionType === "premium"
+        ? [...scheduledSubscriptions]
+            .filter((scheduledSubscription) => {
+              return scheduledSubscription.subscriptionType === "basic";
+            })
+            .sort((a, b) => {
+              const aTime = new Date(
+                a.startDate || a.purchaseDate || a.createdAt || 0,
+              ).getTime();
+              const bTime = new Date(
+                b.startDate || b.purchaseDate || b.createdAt || 0,
+              ).getTime();
 
-        return aTime - bTime;
-      },
-    );
+              return aTime - bTime;
+            })
+            .map((scheduledSubscription) => {
+              return {
+                id: scheduledSubscription._id,
+                subscriptionType: scheduledSubscription.subscriptionType,
+                purchaseDate: scheduledSubscription.purchaseDate,
+                startDate: scheduledSubscription.startDate,
+                expiryDate: scheduledSubscription.expiryDate,
+              };
+            })
+        : [];
 
-    let upcomingCursor = new Date(effectiveCurrentPlanEnd.getTime());
-
-    const upcomingPlans = sortedScheduledSubscriptions.map(
-      (scheduledSubscription) => {
-        const durationMs = DEFAULT_BILLING_CYCLE_MS;
-        const computedStart = new Date(upcomingCursor.getTime());
-        const computedExpiry = new Date(computedStart.getTime() + durationMs);
-        upcomingCursor = computedExpiry;
-
-        return {
-          id: scheduledSubscription._id,
-          subscriptionType: scheduledSubscription.subscriptionType,
-          purchaseDate: scheduledSubscription.purchaseDate,
-          startDate: computedStart,
-          expiryDate: computedExpiry,
-        };
-      },
-    );
+    const activeRemainingMs = currentPlanExpiresAt
+      ? Math.max(0, currentPlanExpiresAt.getTime() - now.getTime())
+      : 0;
 
     return res.status(200).json({
       isPremium: user.isPremium,
       hasSubscription: true,
       subscription: {
         id: subscription._id,
-        stripeSubscriptionId: subscription.stripeSubscriptionId,
+        razorpaySubscriptionId: subscription.razorpaySubscriptionId,
         subscriptionType: subscription.subscriptionType,
         status: subscription.status,
-        startDate: subscription.createdAt,
+        startDate: subscription.startDate || subscription.createdAt,
         updatedAt: subscription.updatedAt,
         expiryDate: formatDateForResponse(effectiveCurrentPlanEnd),
         expiresAt: effectiveCurrentPlanEnd,
         renewalDate: formatDateForResponse(effectiveCurrentPlanEnd),
-        currentPlanExpiryDate: formatDateForResponse(
-          currentPlanExpiresAt || currentPeriodEnd,
-        ),
-        currentPlanExpiresAt: currentPlanExpiresAt || currentPeriodEnd,
+        currentPlanExpiryDate: formatDateForResponse(currentPlanExpiresAt),
+        currentPlanExpiresAt,
         totalPlans: activeSubscriptions.length,
         scheduledPlans: upcomingPlans,
         upcomingPlans,
         upcomingPlan: upcomingPlans[0] || null,
         daysRemaining: Math.ceil(activeRemainingMs / (1000 * 60 * 60 * 24)),
-        stripe: stripeDetails,
       },
     });
   } catch (error) {

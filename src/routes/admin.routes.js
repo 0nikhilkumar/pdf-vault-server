@@ -6,6 +6,7 @@ import {
   getSubscribedRate,
   getUserWithSubscriptions,
   getttingAllUsers,
+  manageUserSubscriptionByAdmin,
   updateAdminPdfMetadata,
   uploadAdminPdf,
 } from "../controllers/admin.controller.js";
@@ -17,6 +18,11 @@ router.get("/all-users", authMiddleware, getttingAllUsers);
 router.get("/:id/with-subscriptions", authMiddleware, getUserWithSubscriptions);
 router.get("/subscribed-users", authMiddleware, allSubscribedUsers);
 router.get("/subscribed-rate", authMiddleware, getSubscribedRate);
+router.post(
+  "/subscriptions/manual-action",
+  authMiddleware,
+  manageUserSubscriptionByAdmin,
+);
 router.get("/pdfs", authMiddleware, getAdminPdfs);
 router.patch("/pdfs/:id", authMiddleware, updateAdminPdfMetadata);
 router.post(
