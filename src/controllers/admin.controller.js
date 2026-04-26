@@ -74,7 +74,11 @@ const getManualDurationMonths = (body = {}, fallback = 1) => {
   const rawDurationMonths =
     body.durationMonths ?? body.duration ?? body.months ?? body.month;
 
-  if (rawDurationMonths === undefined || rawDurationMonths === null || rawDurationMonths === "") {
+  if (
+    rawDurationMonths === undefined ||
+    rawDurationMonths === null ||
+    rawDurationMonths === ""
+  ) {
     return fallback;
   }
 
@@ -979,7 +983,9 @@ export const manageUserSubscriptionByAdmin = async (req, res) => {
           subscriptionType: selectedType,
           startDate: now,
           purchaseDate: now,
-          expiryDate: new Date(now.getTime() + manualDurationMonths * PLAN_DURATION_MS),
+          expiryDate: new Date(
+            now.getTime() + manualDurationMonths * PLAN_DURATION_MS,
+          ),
           pausedAt: null,
           remainingDurationMs: null,
           paymentType: normalizedPaymentType,
@@ -1031,7 +1037,8 @@ export const manageUserSubscriptionByAdmin = async (req, res) => {
             : 0;
 
         if (action === "buy") {
-          const totalRemaining = currentRemainingMs + manualDurationMonths * PLAN_DURATION_MS;
+          const totalRemaining =
+            currentRemainingMs + manualDurationMonths * PLAN_DURATION_MS;
           subscription.status = "active";
           subscription.startDate = subscription.startDate || now;
           subscription.purchaseDate = now;
