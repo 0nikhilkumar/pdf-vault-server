@@ -3,6 +3,8 @@ import { SubscriptionPlan } from "../models/subscriptionPlan.model.js";
 import { User } from "../models/user.model.js";
 import { AdminPdf } from "../models/adminPdf.model.js";
 import { refreshUserPremiumFlag } from "../services/paymentSubscription.service.js";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 const getNormalizedText = (value) =>
   typeof value === "string" ? value.trim() : "";
@@ -788,6 +790,50 @@ export const updateAdminPdfMetadata = async (req, res) => {
         storedName: updatedPdf.storedName,
         createdAt: updatedPdf.createdAt,
         updatedAt: updatedPdf.updatedAt,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const deleteAdminPdfByAdmin = async (req, res) => {
+  try {
+    if (!isAdmin(req, res)) {
+      return;
+    }
+
+    const pdfId = req.params.id;
+
+    if (!pdfId) {
+      return res.status(400).json({ message: "PDF ID is required" });
+    }
+
+    const pdf = await AdminPdf.findById(pdfId);
+    if (!pdf) {
+      return res.status(404).json({ message: "PDF not found" });
+    }
+
+    const absoluteFilePath = path.resolve(pdf.path);
+    try {
+      await fs.unlink(absoluteFilePath);
+    } catch (fileError) {
+      if (fileError?.code !== "ENOENT") {
+        throw fileError;
+      }
+    }
+
+    await AdminPdf.deleteOne({ _id: pdfId });
+
+    return res.status(200).json({
+      message: "PDF deleted successfully",
+      deletedPdf: {
+        _id: pdf._id,
+        title: pdf.title,
+        description: pdf.description,
+        locked: pdf.locked,
+        originalName: pdf.originalName,
+        storedName: pdf.storedName,
       },
     });
   } catch (error) {

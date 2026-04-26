@@ -4,6 +4,7 @@ import {
   allSubscribedUsers,
   createUserByAdmin,
   createSubscriptionPlanByAdmin,
+  deleteAdminPdfByAdmin,
   deleteUserByAdmin,
   deleteSubscriptionPlanByAdmin,
   getAllSubscriptionPlansByAdmin,
@@ -61,6 +62,7 @@ router.post(
 );
 router.get("/pdfs", authMiddleware, getAdminPdfs);
 router.patch("/pdfs/:id", authMiddleware, updateAdminPdfMetadata);
+router.delete("/pdfs/:id", authMiddleware, deleteAdminPdfByAdmin);
 router.post(
   "/pdfs/upload",
   authMiddleware,
