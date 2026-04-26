@@ -28,6 +28,9 @@ const subscriptionSchema = new Schema(
       type: String,
       enum: ["basic", "premium"],
       required: true,
+      trim: true,
+      lowercase: true,
+      maxlength: 50,
     },
     expiryDate: {
       type: Date,

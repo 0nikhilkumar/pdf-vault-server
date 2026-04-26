@@ -7,6 +7,7 @@ import {
   checkUserSubscription,
   getAdminPdfFile,
   getAdminPdfList,
+  getSubscriptionPlansForUser,
   getUserPdfFile,
   getUserPdfs,
   login,
@@ -23,6 +24,7 @@ router.post("/register", register);
 router.post("/login", login);
 router.post("/logout", authMiddleware, logout);
 router.get("/subscription/check", authMiddleware, checkUserSubscription);
+router.get("/subscription/plans", authMiddleware, getSubscriptionPlansForUser);
 router.get("/pdfs", authMiddleware, getUserPdfs);
 router.get("/pdfs/file/:fileName", authMiddleware, getUserPdfFile);
 router.get("/admin-pdfs", authMiddleware, getAdminPdfList);

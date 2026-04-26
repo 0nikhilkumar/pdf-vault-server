@@ -3,6 +3,7 @@ import { BlockedToken } from "../models/token.model.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { Subscription } from "../models/subscription.model.js";
+import { SubscriptionPlan } from "../models/subscriptionPlan.model.js";
 import { AdminPdf } from "../models/adminPdf.model.js";
 import fs from "fs";
 import path from "path";
@@ -609,6 +610,21 @@ export const checkUserSubscription = async (req, res) => {
         upcomingPlan: upcomingPlans[0] || null,
         daysRemaining: Math.ceil(activeRemainingMs / (1000 * 60 * 60 * 24)),
       },
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
+export const getSubscriptionPlansForUser = async (_req, res) => {
+  try {
+    const plans = await SubscriptionPlan.find()
+      .select("planType price month description createdAt updatedAt")
+      .sort({ price: 1, month: 1 });
+
+    return res.status(200).json({
+      count: plans.length,
+      plans,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message });
