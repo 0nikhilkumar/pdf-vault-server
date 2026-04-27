@@ -6,16 +6,80 @@ import adminRoutes from "./routes/admin.routes.js";
 import cors from "cors";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { AdminPdf } from "./models/adminPdf.model.js";
 
 const app = express();
 
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:5173",
-    credentials: true,
-  }),
-);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRootDir = path.resolve(__dirname, "..");
+const uploadsRootDir = path.join(projectRootDir, "uploads");
+
+const extractUploadsRelativePath = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const match = value.match(/(?:^|[\\/])uploads[\\/](.+)$/);
+  return match?.[1] ? match[1].replace(/[\\/]+/g, path.sep) : "";
+};
+
+const resolvePdfStoragePath = (storedPath) => {
+  if (typeof storedPath !== "string" || !storedPath.trim()) {
+    return "";
+  }
+
+  const normalizedStoredPath = path.normalize(storedPath.trim());
+  const directPath = path.isAbsolute(normalizedStoredPath)
+    ? normalizedStoredPath
+    : path.resolve(projectRootDir, normalizedStoredPath);
+
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+
+  const uploadsRelativePath = extractUploadsRelativePath(storedPath);
+  if (uploadsRelativePath) {
+    const rebuiltPath = path.join(uploadsRootDir, uploadsRelativePath);
+    if (fs.existsSync(rebuiltPath)) {
+      return rebuiltPath;
+    }
+  }
+
+  return directPath;
+};
+
+const normalizeOrigin = (value) => String(value || "").replace(/\/$/, "");
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+]
+  .filter(Boolean)
+  .map(normalizeOrigin);
+
+const corsOptions = {
+  origin(origin, callback) {
+    // Allow non-browser requests (e.g. Postman/curl) where origin is undefined
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    const normalizedOrigin = normalizeOrigin(origin);
+    if (allowedOrigins.includes(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
 
 // landing page pdf apis
 app.get("/api/landing-page/pdf", async (req, res) => {
@@ -64,16 +128,22 @@ app.get("/api/landing-page/pdf/:fileName", async (req, res) => {
     });
 
     if (!pdf) {
-      return res.status(404).json({ message: "File not found" });
+      return res.status(404).json({ message: "PDF not found in database" });
     }
 
-    const resolvedPath = path.resolve(pdf.path);
+    const resolvedPath = resolvePdfStoragePath(pdf.path);
+
+    // Check if file exists
     if (!fs.existsSync(resolvedPath)) {
-      return res.status(404).json({ message: "File not found" });
+      console.error(`File not found at path: ${resolvedPath}`);
+      return res
+        .status(404)
+        .json({ message: `File not found at: ${resolvedPath}` });
     }
 
     return res.sendFile(resolvedPath);
   } catch (error) {
+    console.error("Error serving PDF:", error);
     return res.status(500).json({ message: error.message });
   }
 });

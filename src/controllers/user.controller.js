@@ -7,6 +7,7 @@ import { SubscriptionPlan } from "../models/subscriptionPlan.model.js";
 import { AdminPdf } from "../models/adminPdf.model.js";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import {
   generateAccessToken,
   generateRefreshToken,
@@ -15,6 +16,57 @@ import {
   DEFAULT_BILLING_CYCLE_MS,
   formatDateForResponse,
 } from "../services/subscriptionHelpers.service.js";
+
+const getNormalizedText = (value) => String(value ?? "").trim();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const projectRootDir = path.resolve(__dirname, "../..");
+const uploadsRootDir = path.join(projectRootDir, "uploads");
+
+const extractUploadsRelativePath = (value) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const match = value.match(/(?:^|[\\/])uploads[\\/](.+)$/);
+  return match?.[1] ? match[1].replace(/[\\/]+/g, path.sep) : "";
+};
+
+const resolveAdminPdfPath = (storedPath) => {
+  if (typeof storedPath !== "string" || !storedPath.trim()) {
+    return "";
+  }
+
+  const normalizedStoredPath = path.normalize(storedPath.trim());
+  const directPath = path.isAbsolute(normalizedStoredPath)
+    ? normalizedStoredPath
+    : path.resolve(projectRootDir, normalizedStoredPath);
+
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+
+  const uploadsRelativePath = extractUploadsRelativePath(storedPath);
+  if (uploadsRelativePath) {
+    const rebuiltPath = path.join(uploadsRootDir, uploadsRelativePath);
+    if (fs.existsSync(rebuiltPath)) {
+      return rebuiltPath;
+    }
+  }
+
+  return directPath;
+};
+
+const getOptionalNormalizedText = (value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  return getNormalizedText(value);
+};
+
+const isValidEmailFormat = (value) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
 const PLAN_PRIORITY = { basic: 1, premium: 2 };
 const getPlanPriority = (type) => PLAN_PRIORITY[type] || 0;
@@ -203,6 +255,84 @@ export const userProfile = async (req, res) => {
   }
 };
 
+export const updateMyProfile = async (req, res) => {
+  try {
+    const userId = req.user?._id;
+
+    if (!userId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const username = getOptionalNormalizedText(req.body.username);
+    const firstName = getOptionalNormalizedText(req.body.firstName);
+    const lastName = getOptionalNormalizedText(req.body.lastName);
+
+    if (
+      username === undefined &&
+      firstName === undefined &&
+      lastName === undefined
+    ) {
+      return res.status(400).json({
+        message:
+          "At least one field (username, firstName, lastName) is required",
+      });
+    }
+
+    if (username !== undefined) {
+      if (!username) {
+        return res.status(400).json({ message: "Username cannot be empty" });
+      }
+
+      const duplicateUsername = await User.findOne({
+        _id: { $ne: userId },
+        username,
+      }).select("_id");
+
+      if (duplicateUsername) {
+        return res.status(409).json({ message: "Username already exists" });
+      }
+
+      user.username = username;
+    }
+
+    if (firstName !== undefined) {
+      if (!firstName) {
+        return res.status(400).json({ message: "First name cannot be empty" });
+      }
+
+      user.firstName = firstName;
+    }
+
+    if (lastName !== undefined) {
+      if (!lastName) {
+        return res.status(400).json({ message: "Last name cannot be empty" });
+      }
+
+      user.lastName = lastName;
+    }
+
+    await user.save();
+
+    const {
+      password: _password,
+      refreshToken,
+      ...updatedUser
+    } = user.toObject();
+
+    return res.status(200).json({
+      message: "Profile updated successfully",
+      user: updatedUser,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message });
+  }
+};
+
 export const logout = async (req, res) => {
   try {
     const accessToken = req.cookies?.accessToken;
@@ -285,7 +415,7 @@ export const getUserPdfFile = async (req, res) => {
     }
 
     const decodedFileName = decodeURIComponent(fileName);
-    const userUploadDir = path.join(process.cwd(), "uploads", String(userId));
+    const userUploadDir = path.join(uploadsRootDir, String(userId));
     const filePath = path.join(userUploadDir, decodedFileName);
 
     if (!fs.existsSync(filePath)) {
@@ -316,7 +446,7 @@ export const getUserPdfs = async (req, res) => {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
-    const userUploadDir = path.join(process.cwd(), "uploads", String(userId));
+    const userUploadDir = path.join(uploadsRootDir, String(userId));
 
     if (!fs.existsSync(userUploadDir)) {
       return res.status(200).json({
@@ -431,12 +561,16 @@ export const getAdminPdfFile = async (req, res) => {
         .json({ message: "This PDF is locked for free users" });
     }
 
-    if (!fs.existsSync(pdf.path)) {
+    const resolvedPath = resolveAdminPdfPath(pdf.path);
+
+    if (!fs.existsSync(resolvedPath)) {
+      console.error(`Admin PDF file not found at: ${resolvedPath}`);
       return res.status(404).json({ message: "File not found" });
     }
 
-    return res.sendFile(pdf.path);
+    return res.sendFile(resolvedPath);
   } catch (error) {
+    console.error("Error serving admin PDF:", error);
     return res.status(500).json({ message: error.message });
   }
 };

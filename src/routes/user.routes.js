@@ -14,6 +14,7 @@ import {
   logout,
   register,
   uploadPdf,
+  updateMyProfile,
   userProfile,
 } from "../controllers/user.controller.js";
 import { upload } from "../middlewares/multer.middleware.js";
@@ -23,6 +24,7 @@ const router = Router();
 router.post("/register", register);
 router.post("/login", login);
 router.post("/logout", authMiddleware, logout);
+router.patch("/profile", authMiddleware, updateMyProfile);
 router.get("/subscription/check", authMiddleware, checkUserSubscription);
 router.get("/subscription/plans", authMiddleware, getSubscriptionPlansForUser);
 router.get("/pdfs", authMiddleware, getUserPdfs);
