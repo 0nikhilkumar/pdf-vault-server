@@ -62,7 +62,6 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin(origin, callback) {
-    // Allow non-browser requests (e.g. Postman/curl) where origin is undefined
     if (!origin) {
       return callback(null, true);
     }
@@ -81,7 +80,7 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// landing page pdf apis
+
 app.get("/api/landing-page/pdf", async (req, res) => {
   try {
     const pdfs = await AdminPdf.find()
@@ -133,7 +132,6 @@ app.get("/api/landing-page/pdf/:fileName", async (req, res) => {
 
     const resolvedPath = resolvePdfStoragePath(pdf.path);
 
-    // Check if file exists
     if (!fs.existsSync(resolvedPath)) {
       console.error(`File not found at path: ${resolvedPath}`);
       return res
@@ -148,15 +146,18 @@ app.get("/api/landing-page/pdf/:fileName", async (req, res) => {
   }
 });
 
-// Raw body parser for Razorpay webhook signature verification
-app.use(
+import { razorpayWebhookHandler } from "./controllers/payment.controller.js";
+
+app.use(cookieParser());
+
+app.post(
   "/api/users/razorpay/webhook",
   express.raw({ type: "application/json" }),
+  razorpayWebhookHandler,
 );
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cookieParser());
 
 app.use("/api/users/razorpay", paymentRoutes);
 app.use("/api/users", userRoutes);

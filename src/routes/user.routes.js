@@ -12,6 +12,7 @@ import {
   getUserPdfs,
   login,
   logout,
+  me,
   register,
   uploadPdf,
   updateMyProfile,
@@ -24,6 +25,7 @@ const router = Router();
 router.post("/register", register);
 router.post("/login", login);
 router.post("/logout", authMiddleware, logout);
+router.get("/me", authMiddleware, me);
 router.patch("/profile", authMiddleware, updateMyProfile);
 router.get("/subscription/check", authMiddleware, checkUserSubscription);
 router.get("/subscription/plans", authMiddleware, getSubscriptionPlansForUser);

@@ -56,6 +56,86 @@ const resolveRequestedPlanId = (body = {}) => {
 
 const getPlanPriority = (planType) => PLAN_PRIORITY[planType] || 0;
 
+// Razorpay Webhook Handler
+export const razorpayWebhookHandler = async (req, res) => {
+  try {
+    console.log("[Webhook] Incoming webhook request");
+    console.log("Headers:", req.headers);
+    console.log("Raw body:", req.body);
+
+    // Razorpay recommends verifying the webhook signature
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    const signature = req.headers["x-razorpay-signature"];
+    // req.body should be a Buffer due to express.raw middleware
+    const rawBody = req.body;
+
+    if (!webhookSecret || !signature) {
+      return res
+        .status(400)
+        .json({ message: "Missing webhook secret or signature" });
+    }
+
+    const crypto = await import("node:crypto");
+    // Use the exact raw body buffer for signature verification
+    const computedSignature = crypto
+      .createHmac("sha256", webhookSecret)
+      .update(rawBody)
+      .digest("hex");
+
+    if (computedSignature !== signature) {
+      return res.status(400).json({ message: "Invalid webhook signature" });
+    }
+
+    // Parse event
+    let event;
+    try {
+      event = JSON.parse(rawBody.toString());
+    } catch (err) {
+      return res.status(400).json({ message: "Invalid webhook payload" });
+    }
+
+    // Handle payment/capture/subscription events
+    if (
+      event.event === "payment.captured" ||
+      event.event === "subscription.activated"
+    ) {
+      // Extract userId and plan info from notes or subscription
+      const notes =
+        event.payload?.payment?.entity?.notes ||
+        event.payload?.subscription?.entity?.notes ||
+        {};
+      const userId = notes.userId;
+      const subscriptionPlanId = notes.subscriptionPlanId;
+      const paymentReference =
+        event.payload?.payment?.entity?.id ||
+        event.payload?.subscription?.entity?.id;
+
+      if (!userId || !subscriptionPlanId) {
+        return res
+          .status(200)
+          .json({ message: "No userId or plan in webhook, skipping." });
+      }
+
+      const plan = await SubscriptionPlan.findById(subscriptionPlanId);
+      if (!plan) {
+        return res.status(200).json({ message: "Plan not found, skipping." });
+      }
+
+      await activatePlanForUser({ userId, plan, paymentReference });
+
+      return res
+        .status(200)
+        .json({ message: "Subscription activated via webhook." });
+    }
+
+    return res
+      .status(200)
+      .json({ message: "Webhook received, no action taken." });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || "Webhook error" });
+  }
+};
+
 const activatePlanForUser = async ({ userId, plan, paymentReference }) => {
   const now = new Date();
 
