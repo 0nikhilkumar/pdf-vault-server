@@ -2,21 +2,21 @@ import { User } from "../models/user.model.js";
 import { SubscriptionPlan } from "../models/subscriptionPlan.model.js";
 
 const DEMO_USER = {
-  username: "duser",
+  username: "user",
   firstName: "demo",
   lastName: "user",
-  email: "duser@gmail.com",
-  password: "duser",
+  email: "user@gmail.com",
+  password: "user",
   role: "user",
   isPremium: false,
 };
 
 const DEMO_ADMIN = {
-  username: "dadmin",
+  username: "admin",
   firstName: "demo",
   lastName: "admin",
-  email: "dadmin@gmail.com",
-  password: "dadmin",
+  email: "admin@gmail.com",
+  password: "admin",
   role: "admin",
   isPremium: true,
 };

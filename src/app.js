@@ -60,6 +60,10 @@ app.use(
 );
 
 
+// Serve static files from React build
+app.use(express.static(path.join(__dirname, '../dist')));
+
+
 app.get("/api/landing-page/pdf", async (req, res) => {
   try {
     const pdfs = await AdminPdf.find()
@@ -141,5 +145,9 @@ app.use(express.urlencoded({ extended: true }));
 app.use("/api/users/razorpay", paymentRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/admin", adminRoutes);
+
+app.use((req, res) => {
+  res.sendFile(path.join(__dirname, '../dist', 'index.html'));
+});
 
 export default app;

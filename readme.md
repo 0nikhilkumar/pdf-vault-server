@@ -8,20 +8,20 @@ The application auto-checks these records on server startup and creates them onl
 
 ### Demo User
 
-- Username: `duser`
+- Username: `user`
 - First Name: `demo`
 - Last Name: `user`
-- Email: `duser@gmail.com`
-- Password: `duser`
+- Email: `user@gmail.com`
+- Password: `user`
 - Role: `user`
 - isPremium: `false`
 
 ### Demo Admin
 
-- Username: `dadmin`
+- Username: `admin`
 - First Name: `demo`
 - Last Name: `admin`
-- Email: `dadmin@gmail.com`
-- Password: `dadmin`
+- Email: `admin@gmail.com`
+- Password: `admin`
 - Role: `admin`
 - isPremium: `true`
